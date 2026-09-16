@@ -6,6 +6,7 @@ import logging
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
+import config
 from .base import Listing
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,10 @@ def scrape() -> list[Listing]:
     seen_urls: set[str] = set()
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(
+                headless=True,
+                executable_path=config.CHROMIUM_EXECUTABLE_PATH or None,
+            )
             try:
                 for search_url in _SEARCH_URLS:
                     page = browser.new_page()

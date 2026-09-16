@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from playwright_stealth import Stealth
 
+import config
 from .base import Listing
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ def scrape() -> list[Listing]:
             browser = pw.chromium.launch(
                 headless=True,
                 args=["--disable-blink-features=AutomationControlled"],
+                executable_path=config.CHROMIUM_EXECUTABLE_PATH or None,
             )
             try:
                 context = browser.new_context(
