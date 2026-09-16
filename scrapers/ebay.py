@@ -3,8 +3,9 @@ import time
 import random
 import logging
 
-import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+from playwright_stealth import Stealth
 
 from .base import Listing
 
@@ -12,39 +13,13 @@ log = logging.getLogger(__name__)
 
 _TARGET_MODELS = ("ST4000NM0033", "HUS726040ALA610", "HUS724040ALA640", "WD4000FYYZ")
 
-_BASE_URL = "https://www.ebay.de/sch/i.html"
 # Category 131553 = Internal Hard Disk Drives on ebay.de
 # _sop=15 = lowest price + postage first, LH_BIN=1 = Buy It Now only
-_SEARCH_PARAMS = {
-    "_nkw": "(ST4000NM0033,HUS726040ALA610,HUS724040ALA640,WD4000FYYZ)",
-    "_sop": "15",
-    "LH_BIN": "1",
-    "_sacat": "131553",
-    "_ipg": "60",
-}
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,"
-        "application/signed-exchange;v=b3;q=0.7"
-    ),
-    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "max-age=0",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Linux"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
+_SEARCH_URL = (
+    "https://www.ebay.de/sch/i.html"
+    "?_nkw=%28ST4000NM0033%2CHUS726040ALA610%2CHUS724040ALA640%2CWD4000FYYZ%29"
+    "&_sop=15&LH_BIN=1&_sacat=131553&_ipg=60"
+)
 
 
 def _parse_price(text: str) -> float | None:
@@ -62,18 +37,35 @@ def _is_target_drive(title: str) -> bool:
 
 def scrape() -> list[Listing]:
     listings: list[Listing] = []
-    session = requests.Session()
     try:
-        # Warm up the session to acquire cookies before the search request
-        session.get("https://www.ebay.de/", headers=_HEADERS, timeout=15)
-        time.sleep(random.uniform(1.0, 2.0))
-        resp = session.get(_BASE_URL, params=_SEARCH_PARAMS, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        log.error(f"[eBay] request failed: {exc}")
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    locale="de-DE",
+                )
+                page = context.new_page()
+                Stealth().apply_stealth_sync(page)
+                page.goto(_SEARCH_URL, timeout=30000, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_selector("li.s-item", timeout=15000)
+                except PWTimeoutError:
+                    log.warning("[eBay] timed out waiting for listing items")
+                html = page.content()
+            finally:
+                browser.close()
+    except Exception as exc:
+        log.error(f"[eBay] scraper failed: {exc}")
         return listings
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(html, "lxml")
 
     for item in soup.select("li.s-item"):
         title_el = item.select_one(".s-item__title")
@@ -102,13 +94,10 @@ def scrape() -> list[Listing]:
             continue
 
         listings.append(Listing(
-            title=title,
-            price=price,
-            url=url,
-            source="eBay.de",
-            condition=condition,
+            title=title, price=price, url=url,
+            source="eBay.de", condition=condition,
         ))
 
-    log.info(f"[eBay] scraped {len(listings)} matching listings")
-    time.sleep(random.uniform(1.5, 3.5))
+    log.info(f"[eBay] scraped {len(listings)} matching listing(s)")
+    time.sleep(random.uniform(1.0, 2.0))
     return listings

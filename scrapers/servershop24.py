@@ -3,30 +3,19 @@ import time
 import random
 import logging
 
-import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
 from .base import Listing
 
 log = logging.getLogger(__name__)
 
-_BASE_URL = "https://www.servershop24.de"
-_SEARCH_URL = (
-    "https://www.servershop24.de/search/"
-    "?q=4TB+3.5+SATA+Festplatte"
-    "&items_per_page=100"
-)
+_TARGET_MODELS = ("ST4000NM0033", "HUS726040ALA610", "HUS724040ALA640", "WD4000FYYZ")
+_SEARCH_URLS = [
+    f"https://www.servershop24.de/search/?q={model}&items_per_page=100"
+    for model in _TARGET_MODELS
+]
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "de-DE,de;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
-
-# Product URLs on servershop24 always end with /a-<digits>/
 _PRODUCT_URL_RE = re.compile(r"/a-\d+/")
 
 
@@ -38,7 +27,7 @@ def _parse_price(text: str) -> float | None:
 
 
 def _clean_title(raw: str) -> str:
-    """servershop24 link text duplicates the title; keep only the first half."""
+    # servershop24 sometimes duplicates the title in link text
     words = raw.split()
     half = len(words) // 2
     if half > 0 and words[:half] == words[half:]:
@@ -46,51 +35,36 @@ def _clean_title(raw: str) -> str:
     return raw
 
 
-def _is_sata_4tb(title: str) -> bool:
-    # Search query already includes "3.5"; skip form-factor check to avoid missing LFF listings
-    t = title.lower()
-    return "sata" in t and ("4tb" in t.replace(" ", "") or "4 tb" in t)
+def _is_target_drive(title: str) -> bool:
+    t = title.upper()
+    return any(m in t for m in _TARGET_MODELS)
 
 
-def scrape() -> list[Listing]:
+def _parse_rendered_html(html: str, seen_urls: set[str]) -> list[Listing]:
     listings: list[Listing] = []
-    try:
-        resp = requests.get(_SEARCH_URL, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        log.error(f"[servershop24] request failed: {exc}")
-        return listings
+    soup = BeautifulSoup(html, "lxml")
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    seen_urls: set[str] = set()
     items = (
-        soup.select("div.product-list-item")
+        soup.select("ul.product-list li")
+        or soup.select("div.product-list-item")
         or soup.select("li.product-list-item")
         or soup.select("article.product-item")
-        or soup.select(".cmp-product-thumb")
     )
 
     if items:
         for item in items:
             link_el = item.select_one("a[href]")
-            price_el = (
-                item.select_one(".price")
-                or item.select_one("[class*='price']")
-                or item.select_one(".content-price")
-            )
             if not link_el:
                 continue
             url = link_el["href"]
             if not url.startswith("http"):
-                url = _BASE_URL + url
+                url = "https://www.servershop24.de" + url
             if url in seen_urls or not _PRODUCT_URL_RE.search(url):
                 continue
 
-            title = _clean_title(link_el.get_text(strip=True))
-            price_text = price_el.get_text() if price_el else item.get_text()
-            price = _parse_price(price_text)
-
-            if not title or price is None or not _is_sata_4tb(title):
+            title = _clean_title(item.get_text(" ", strip=True))
+            price = _parse_price(item.get_text())
+            if not title or price is None or not _is_target_drive(title):
                 continue
 
             condition = "used" if "b-ware" in title.lower() else "new"
@@ -100,19 +74,28 @@ def scrape() -> list[Listing]:
                 source="servershop24.de", condition=condition,
             ))
     else:
-        # Fallback: parse all product anchor tags and extract price from link text
+        # Fallback: find product links and walk DOM upward to find the price
         for link in soup.select("a[href]"):
             url = link["href"]
             if not url.startswith("http"):
-                url = _BASE_URL + url
+                url = "https://www.servershop24.de" + url
             if url in seen_urls or not _PRODUCT_URL_RE.search(url):
                 continue
 
-            link_text = link.get_text(" ", strip=True)
-            title = _clean_title(link_text)
-            price = _parse_price(link_text)
+            title = _clean_title(link.get_text(strip=True))
+            if not title or not _is_target_drive(title):
+                continue
 
-            if not title or price is None or not _is_sata_4tb(title):
+            container, price = link.parent, None
+            for _ in range(5):
+                price = _parse_price(container.get_text())
+                if price is not None:
+                    break
+                if container.parent is None:
+                    break
+                container = container.parent
+
+            if price is None:
                 continue
 
             condition = "used" if "b-ware" in title.lower() else "new"
@@ -122,6 +105,34 @@ def scrape() -> list[Listing]:
                 source="servershop24.de", condition=condition,
             ))
 
-    log.info(f"[servershop24] scraped {len(listings)} matching listings")
-    time.sleep(random.uniform(1.0, 2.5))
+    return listings
+
+
+def scrape() -> list[Listing]:
+    listings: list[Listing] = []
+    seen_urls: set[str] = set()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                for search_url in _SEARCH_URLS:
+                    page = browser.new_page()
+                    try:
+                        page.goto(search_url, timeout=30000, wait_until="networkidle")
+                        try:
+                            page.wait_for_selector(
+                                "ul.product-list li, category-item", timeout=8000
+                            )
+                        except PWTimeoutError:
+                            pass
+                        listings.extend(_parse_rendered_html(page.content(), seen_urls))
+                    finally:
+                        page.close()
+                    time.sleep(random.uniform(0.5, 1.5))
+            finally:
+                browser.close()
+    except Exception as exc:
+        log.error(f"[servershop24] scraper failed: {exc}")
+
+    log.info(f"[servershop24] scraped {len(listings)} matching listing(s)")
     return listings
