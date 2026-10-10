@@ -1,0 +1,11 @@
+services:
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: drive-search-scraper
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./seen.json:/app/seen.json
