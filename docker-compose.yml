@@ -7,5 +7,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      STATE_FILE_PATH: /app/data/seen.json
     volumes:
-      - ./seen.json:/app/seen.json
+      - ./data:/app/data
