@@ -46,7 +46,8 @@ def _parse_rendered_html(html: str, seen_urls: set[str]) -> list[Listing]:
     soup = BeautifulSoup(html, "lxml")
 
     items = (
-        soup.select("ul.product-list li")
+        soup.select("article.cmp-product-thumb")
+        or soup.select("ul.product-list li")
         or soup.select("div.product-list-item")
         or soup.select("li.product-list-item")
         or soup.select("article.product-item")
@@ -54,7 +55,7 @@ def _parse_rendered_html(html: str, seen_urls: set[str]) -> list[Listing]:
 
     if items:
         for item in items:
-            link_el = item.select_one("a[href]")
+            link_el = item.select_one("a.product-link[href]") or item.select_one("a[href]")
             if not link_el:
                 continue
             url = link_el["href"]
@@ -63,8 +64,14 @@ def _parse_rendered_html(html: str, seen_urls: set[str]) -> list[Listing]:
             if url in seen_urls or not _PRODUCT_URL_RE.search(url):
                 continue
 
-            title = _clean_title(item.get_text(" ", strip=True))
-            price = _parse_price(item.get_text())
+            title_el = item.select_one(".thumb-title")
+            title = _clean_title(
+                title_el.get_text(strip=True) if title_el else link_el.get_text(strip=True)
+            )
+
+            price_el = item.select_one(".price")
+            price = _parse_price(price_el.get_text() if price_el else item.get_text())
+
             if not title or price is None or not _is_target_drive(title):
                 continue
 
@@ -119,17 +126,30 @@ def scrape() -> list[Listing]:
                 executable_path=config.CHROMIUM_EXECUTABLE_PATH or None,
             )
             try:
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    locale="de-DE",
+                )
                 for search_url in _SEARCH_URLS:
-                    page = browser.new_page()
+                    page = context.new_page()
                     try:
                         page.goto(search_url, timeout=30000, wait_until="networkidle")
                         try:
                             page.wait_for_selector(
-                                "ul.product-list li, category-item", timeout=8000
+                                "article.cmp-product-thumb, ul.product-list li", timeout=8000
                             )
                         except PWTimeoutError:
                             pass
-                        listings.extend(_parse_rendered_html(page.content(), seen_urls))
+                        html = page.content()
+                        log.info(f"[servershop24] page title: {page.title()!r} — {search_url}")
+                        before = len(listings)
+                        listings.extend(_parse_rendered_html(html, seen_urls))
+                        log.info(
+                            f"[servershop24] {len(listings) - before} listing(s) parsed from {search_url}"
+                        )
                     finally:
                         page.close()
                     time.sleep(random.uniform(0.5, 1.5))
