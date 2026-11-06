@@ -12,3 +12,9 @@ CHROMIUM_EXECUTABLE_PATH: str | None = os.getenv("CHROMIUM_EXECUTABLE_PATH")
 # eBay Browse API credentials — register a free app at https://developer.ebay.com
 EBAY_CLIENT_ID: str | None = os.getenv("EBAY_CLIENT_ID")
 EBAY_CLIENT_SECRET: str | None = os.getenv("EBAY_CLIENT_SECRET")
+# eBay Marketplace Account Deletion notification endpoint (required for production compliance)
+# EBAY_VERIFICATION_TOKEN: a secret string you choose when registering the endpoint in the portal
+# EBAY_NOTIFICATION_ENDPOINT_URL: the public HTTPS URL eBay will POST events to
+EBAY_VERIFICATION_TOKEN: str = os.getenv("EBAY_VERIFICATION_TOKEN", "")
+EBAY_NOTIFICATION_ENDPOINT_URL: str = os.getenv("EBAY_NOTIFICATION_ENDPOINT_URL", "")
+EBAY_NOTIFICATION_PORT: int = int(os.getenv("EBAY_NOTIFICATION_PORT", "8082"))

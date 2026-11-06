@@ -1,10 +1,12 @@
 import logging
+import threading
 import time
 from dataclasses import asdict
 
 import schedule
 
 import config
+import ebay_notif
 import notifier
 import state
 from scrapers.ebay import scrape as scrape_ebay
@@ -95,6 +97,15 @@ def main() -> None:
         f"digest every {config.DIGEST_INTERVAL_HOURS}h, "
         f"threshold €{config.PRICE_THRESHOLD_EUR}"
     )
+
+    # Start eBay notification endpoint if configured
+    if config.EBAY_VERIFICATION_TOKEN and config.EBAY_NOTIFICATION_ENDPOINT_URL:
+        threading.Thread(target=ebay_notif.start, daemon=True).start()
+    else:
+        log.info(
+            "[eBay notif] endpoint not started — set EBAY_VERIFICATION_TOKEN and "
+            "EBAY_NOTIFICATION_ENDPOINT_URL to enable production compliance"
+        )
 
     # Run immediately on startup so we don't wait for the first interval
     scrape_and_alert()
