@@ -11,5 +11,10 @@ services:
       STATE_FILE_PATH: /app/data/seen.json
     volumes:
       - ./data:/app/data
-    ports:
-      - "8082:8082"
+    networks:
+      - default
+      - edge
+
+networks:
+  edge:
+    external: true
